@@ -1,0 +1,710 @@
+---
+title: "drug-interaction-analysis"
+date: "Compiled at `r format(Sys.time(), '%Y-%m-%d %H:%M:%S', tz = 'UTC')` UTC"
+output: github_document
+params:
+  name: "drug-interaction-analysis" # change if you rename file
+---
+
+```{r here, message=FALSE, echo = F}
+here::i_am(paste0(params$name, ".Rmd"), uuid = "8d0bb6d6-5ca0-48b3-af93-03b3ce359b3a")
+knitr::opts_chunk$set(dpi = 400, echo = T, warning = F, message = F)
+```
+
+
+
+```{r directories, echo = F}
+# create or *empty* the target directory, used to write this file's data: 
+projthis::proj_create_dir_target(params$name, clean = TRUE)
+
+# function to get path to target directory: path_target("sample.csv")
+path_target <- projthis::proj_path_target(params$name)
+
+# function to get path to previous data: path_source("00-import", "sample.csv")
+path_source <- projthis::proj_path_source(params$name)
+```
+
+
+
+
+We use hiernet -a Lasso for (weak) hierarchical interactions- with CPSS to robustly recover interaction effects between compounds on cell morphology features. In addition we add a Huber loss to the optimization problem to account for outlier in the data. We only focus on experiments with a concentration of 10 uM per compound.
+
+
+```{r packages, echo = T, warning = F, message=F}
+# Load necessary libraries
+library(conflicted)
+library(openxlsx)
+library(ggplot2)
+library(pheatmap)
+library(RColorBrewer)
+library(stabs)
+library(reshape2)
+library(tidyverse)
+library(hrbrthemes)
+library(viridis)
+library(forcats)
+library(readr)  # for read_csv
+library(protoclust)  # for clustering methods
+library(bnstruct)  # for data imputation (k-NN)
+library(lsa)  # for cosine distance
+library(factoextra)
+library(gridExtra)
+library(extrafont)  # for fonts
+library(ggrastr)  # to rasterize plots
+library(scales)
+library(ggrepel)
+
+# Install packages from GitHub
+devtools::install_github("marastadler/hierNet")
+library(hierNet)
+
+# Plotting utilities
+library(grid)
+```
+
+
+## Read data
+
+```{r}
+data <- read.xlsx("data/Data_New_Protocol.xlsx")
+```
+
+```{r}
+Y <- data[, 23:ncol(data)]
+rownames(Y) <- data$WellId
+rownames(Y) <- gsub(" ", "", rownames(Y), fixed = TRUE)
+
+Y[1:3, 1:3]
+```
+
+
+
+
+```{r echo = F}
+X <- data[, 2:22]
+rownames(X) <- data$WellId
+rownames(X) <- gsub(" ", "", rownames(X), fixed = TRUE)
+```
+
+
+## Input data X
+
+```{r echo = T}
+dim(X)
+```
+
+```{r echo = T}
+X[1:5, 1:5]
+colnames(X)[which(colnames(X) == "DMSO")] <- "1% DMSO"
+```
+
+
+### Plot Design matrix X
+
+```{r}
+plt_h <- pheatmap(t(X), cluster_rows = F, cluster_cols = T, color = c("white", "darkgrey"),
+         fontsize_col = 0.001)
+```
+
+
+```{r eval = F, echo = F}
+## check DMSO measurements
+
+y_DMSO <- scale(Y[ which(X[, '1% DMSO'] == 1), ])
+
+pheatmap(y_DMSO, cluster_rows = F, cluster_cols = F, 
+           fontsize_col = 2, cellwidth = 3, 
+           cellheight = 6, fontsize_row = 5,
+           color = colorRampPalette(rev(brewer.pal(n = 7, name =
+                                                     "RdBu")))(100), 
+           breaks = seq(-max(abs(y_DMSO)), max(abs(y_DMSO)), length.out = 100))
+```
+
+### Remove DMSO
+
+```{r}
+# First, remove all rows (experiments) containing DMSO in X as well as in Y
+
+# check if rows are ordered in the same way in X and Y
+all(rownames(X) == rownames(Y))
+X_initital <- X
+DMSO_experiments <- which(X[, "1% DMSO"] == 0)
+X <- X[DMSO_experiments, ]
+
+Y <- Y[DMSO_experiments,] 
+# Then remove DMSO columns (since only zeros remain)
+ind_DMSO <- which(colnames(X) == "1% DMSO")
+X <- X[,-ind_DMSO]
+
+dim(X)
+```
+
+The experimental design consists of 408 samples and 20 compounds.
+
+### Compute interactions
+
+```{r echo = T}
+X <- as.matrix(X)
+X_interactions <- cbind(X, hierNet::compute.interactions.c(X, diagonal = F)) 
+dim(X_interactions)
+```
+
+There are 210 interaction coefficients when considering all-pairs of interactions from 20 compounds.
+
+
+### How many replicates do exist?
+
+
+
+```{r}
+X_unique <- X[!duplicated(X),]
+dim(X_unique)
+```
+
+There are 50 different experiments.
+
+```{r echo = F}
+index_replicate <- c()
+for(i in 1:nrow(X_unique)){
+    
+  for(j in 1:nrow(X)){
+    if(all(X[j, ] == X_unique[i, ])){
+      index_replicate[j] <- i
+    }
+  
+  }
+}
+
+
+table(index_replicate)
+```
+The individual experiments were repeated 6, 8 or 18 times.
+
+```{r}
+dim(Y)
+```
+For each experiment 146 features were observed.
+
+## Scale Features Y
+
+We scale the features to make our model coefficients comparable.
+
+```{r}
+Ysc = scale(Y)
+```
+
+Let's have a look at a subset of scaled Y
+
+```{r echo = T}
+Ysc[1:5, 1:4]
+```
+
+
+We account for outlier samples by using a robust loss.
+We do not exclude any experiments in advance.
+
+# Robust HierNet for binary input data
+
+In this version the design matrix X includes duplicated rows representing replicates in the experiment.
+
+
+
+
+# hierNet with Huber loss
+
+```{r echo = F}
+source('R/functions.R')
+```
+
+```{r eval = F}
+fit.list.weak.10uM <- hiernet.stabsel.all(X = X, Y = Ysc,
+                                            selection_probability = 0.6)
+
+```
+
+```{r eval = F, echo = F}
+saveRDS(fit.list.weak.10uM, "temp/fit_list_weak_robust_10uM_newData_2.rds")
+```
+
+
+```{r eval = T, echo = F}
+fit.list.weak.10uM <- readRDS("temp/fit_list_weak_robust_10uM_newData_2.rds")
+```
+
+### Refitting
+
+```{r}
+refit_10uM <- refit.all(X = X, Y = Ysc, fit_list_weak = 
+                                   fit.list.weak.10uM)
+refit_list_weak_10uM <- refit_10uM$refit_list
+coef_list_weak_10uM <- refit_10uM$coef_list
+```
+
+
+### How good is the predictive accuracy?
+
+```{r echo = F}
+r_sq_adj_weak <- c()
+for(n in 1:length(refit_list_weak_10uM)){
+  r_sq_adj_weak[n] <- summary(refit_list_weak_10uM[[n]])$adj.r.squared
+}
+summary_r_sq_weak_10uM <- data.frame("Feature" = colnames(Ysc), 
+                                "Rsquared" = r_sq_adj_weak)
+
+hist(summary_r_sq_weak_10uM$Rsquared,
+     main = "Histogram of adjusted R squared values",
+     xlab = "", col = "white", breaks = 50)
+```
+
+
+
+```{r echo = F}
+X_interactions <- cbind(X, 
+                          hierNet::compute.interactions.c(X, diagonal = F))
+coef_matrix_weak_10uM = matrix(nrow = ncol(Ysc), 
+                               ncol = ncol(X_interactions))
+colnames(coef_matrix_weak_10uM) <- colnames(X_interactions)
+rownames(coef_matrix_weak_10uM) <- colnames(Ysc)
+
+## combine all coefficients in the list to a coefficient matrix
+for(n in 1:length(coef_list_weak_10uM)){
+  coef_n <- coef_list_weak_10uM[[n]][-1]
+  coef_matrix_weak_10uM[n, names(coef_n)] <- coef_n
+}
+## There might appear some estimates as NAs in the refitting step (if a column in X only contains zeros)
+## replace those NAs by zeros:
+coef_matrix_weak_10uM[is.na(coef_matrix_weak_10uM)] <- 0
+```
+
+
+
+
+
+
+
+
+
+### How often do compounds occur together in the experimental design?
+
+
+```{r echo = T, eval = T, fig.height=7, fig.width=7}
+#Symmetrical matrix showing number of experiments including both compounds.
+pheatmap(t(X) %*% X, cluster_rows = F, cluster_cols = F,
+         border_color = "white", cellheight = 14, cellwidth = 14,
+         fontsize_row = 11, fontsize_col = 11,
+         na_col = "white",
+         color = colorRampPalette((brewer.pal(n = 7, name =
+  "Blues")))(100), 
+
+  display_numbers = T, number_format =  "%.0f", number_color = "white",
+  legend = F)
+```
+
+### How often do we observe what?
+
+```{r , fig.height=8, fig.width=8}
+plot.count.coef(coef_matrix_weak = coef_matrix_weak_10uM, X = X, cell_height = 17, cell_width = 17, fontsize_row = 12, fontsize_col = 12)
+```
+
+
+We can only find combinatorial effects for compounds that got measured together in an experiment. This means that our results are biased by the experimental design.
+What might be of special interest are combinations of compounds that occur often in the experiments, but which do not (or almost not) show combinatorial effects in our model.
+
+
+
+
+
+
+## All features into one plot
+
+
+First we remove all SD, CV and SE features as they are difficult to interpret.
+
+```{r}
+names_vector <- rownames(coef_matrix_weak_10uM)
+
+# Exclude names starting with "SD", "CV", or "SE"
+filtered_names <- names_vector[!grepl("^(SD|CV|SE)", names_vector)]
+
+coef_matrix_weak_10uM <- coef_matrix_weak_10uM[filtered_names, ]
+dim(coef_matrix_weak_10uM)
+```
+
+```{r echo = F, eval = T}
+coef_int <- coef_matrix_weak_10uM[, 21:ncol(coef_matrix_weak_10uM)]
+coef_matrix_weak_10uM_t <- t(coef_matrix_weak_10uM)
+
+coef_mat3 <- matrix(nrow = 3, 
+                    ncol = sum(
+                      coef_matrix_weak_10uM_t[
+                        21:nrow(coef_matrix_weak_10uM_t),] != 0))
+
+rownames(coef_mat3) <- c("comp. 1", "comp. 2", "Int") 
+# export_csv <- matrix(nrow = 54, ncol = 6)
+index_interaction_proteins <- which(rowSums(coef_int)==0)
+n <- 0
+col_names <- c()
+for(prot in 1:nrow(coef_matrix_weak_10uM)){
+  
+  for(x in 1:19){
+    for(y in (x + 1):20){
+      mod1 <- rownames(coef_matrix_weak_10uM_t)[x]
+      mod2 <- rownames(coef_matrix_weak_10uM_t)[y]
+      
+      if(paste0(mod1, ":", mod2) %in% rownames(coef_matrix_weak_10uM_t)){
+        mod1mod2 <- paste0(mod1, ":", mod2)
+      }
+      else{mod1mod2 <- paste0(mod2, ":", mod1)}
+      
+      
+      
+      if(coef_matrix_weak_10uM_t[mod1mod2, prot] != 0){
+        n <- n + 1
+
+        coef_mat3[, n] <- c(coef_matrix_weak_10uM_t[mod1, prot], 
+                            coef_matrix_weak_10uM_t[mod2, prot], 
+                            coef_matrix_weak_10uM_t[mod1mod2, prot])
+        
+        col_names[n] <- paste0(colnames(coef_matrix_weak_10uM_t)[prot],
+                               " (", mod1mod2, ")")
+        
+        
+      }
+    }
+    
+  }
+  
+    
+}
+
+
+colnames(coef_mat3) <- col_names
+```
+
+
+
+
+## Hierarchical clustering with prototypes
+
+
+```{r}
+dat <- t(coef_matrix_weak_10uM)
+
+
+## remove zero rows
+keep_row <- which(rowSums(abs(dat)) != 0)
+dat <- dat[keep_row,]
+any(rowSums(abs(dat)) == 0)
+
+## remove zero columns
+keep_col <- which(colSums(abs(dat)) != 0)
+dat <- dat[, keep_col]
+any(colSums(abs(dat)) == 0)
+
+dim(dat)
+## Compute cosine dissimilarity
+cos_dist <- 1 - lsa::cosine(dat)
+
+## Prototype clustering 
+hc <- protoclust(cos_dist)
+n = ncol(dat)
+k = 20
+cut <- protocut(hc, k=k)
+
+pr <- cut$protos[cut$cl]
+dmat <- cos_dist
+ifar <- which.max(dmat[cbind(1:n, pr[1:n])])
+
+h <- hc$height[n - k]
+```
+
+```{r echo = F}
+#{plotwithprototypes(hc, imerge=cut$imerge, col=1, cex = 1, main = paste(40, "clusters"))
+#abline(h=h, lty=2)}
+
+
+
+## Loop over different cluster sizes:
+
+# hc <- protoclust(cos_dist)
+# n = nrow(dat)
+# 
+# 
+# for(k in 20:40){
+# 
+# 
+#   cut <- protocut(hc, k=k)
+# 
+#   pr <- cut$protos[cut$cl]
+# 
+#   dmat <- cos_dist
+#   ifar <- which.max(dmat[cbind(1:n, pr[1:n])])
+#   
+#   h <- hc$height[n - k]
+#  
+#   
+#   {plotwithprototypes(hc, imerge=cut$imerge,  cex = 1, 
+#                       main = paste(k, "clusters"))
+#     abline(h=h, lty=2)}
+# }
+```
+
+
+```{r}
+
+## Plot
+
+## delete protos to get the same structure as hclust
+hc1 <- hc[-4]
+class(hc1) <- "hclust"
+den1 <- as.dendrogram(hc1)
+
+
+## Plot dendrogram
+p <- fviz_dend(den1, horiz = T, ylab = "", lwd = 0.1, main = "", 
+               show_labels = F) +
+  theme(axis.line = element_blank(),
+        axis.text.x = element_blank(),
+        axis.text.y = element_blank(),
+        axis.ticks = element_blank(),
+        axis.title.x = element_blank(),
+        axis.title.y = element_blank(),
+        legend.position = "none",
+        panel.background = element_blank(),
+        panel.border = element_blank(),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        plot.background = element_blank())
+
+
+clustersize <- table(cut$cl)
+
+## combine clustersize and corresponding prototype
+clustersize.protos <- data.frame("protos" = rownames(cos_dist)[cut$protos], 
+                                 "clustersize" = clustersize)
+
+## identify prototypes in list of all proteins
+pr <- c()
+j <- 0
+for(i in cut$protos){
+  j <- j + 1
+  pr[j] <- which(hc$order == i)
+}
+
+## border coordinates for clusters
+clustersize.protos$ordering <- pr
+clustersize.protos <- clustersize.protos[order(clustersize.protos$ordering),]
+
+cluster.borders <- cumsum(clustersize.protos$clustersize.Freq)
+my.lines <- data.frame(x1 = 0.5, x2 = 80.5, y1 = cluster.borders[-20] + .5, 
+                       y2 = cluster.borders[-20] + .5)
+
+
+labels <- rownames(cos_dist)[cut$protos]
+
+dat <- as.data.frame(t(dat))
+dat.ordered <- dat[hc$order, ]
+rownames(dat)[rownames(dat) %in% labels] <- paste0(rownames(dat)[rownames(dat) %in% labels], "*")
+dat_long <- dat %>%
+  as.data.frame() %>%
+  rownames_to_column("feature") %>%
+  pivot_longer(-c(feature), names_to = "drug", values_to = "Coefficient")
+
+
+dat_long$feature<- factor(x = dat_long$feature,
+                       levels = rownames(dat)[hc$order],
+                       ordered = TRUE)
+dat_long$drug <- factor(x = dat_long$drug,
+                                 ## change ordering of modifications
+                                 levels = unique(dat_long$drug),
+                                 ordered = TRUE)
+
+```
+
+
+
+### Plot heatmap with borders and prototypes
+
+```{r echo = F, fig.height=10}
+heatmap.plot <- ggplot(data = dat_long, aes(x = drug, y = feature)) +
+    geom_tile(aes(fill = Coefficient)) + 
+    #scale_fill_distiller(palette = "RdBu", direction = -1, 
+     #                    na.value = "lightgrey") +
+  scale_fill_gradient2(low = scales::muted("blue"), mid = "white", high = scales::muted("red"), midpoint = 0, na.value = "lightgrey") +
+    scale_x_discrete(position = "top") + 
+    scale_y_discrete(position = "right") +
+    theme(axis.text.y = element_blank(), # element_text(size = 5, colour = "black"),
+          axis.text.x = element_text(size = 6, angle = 90, vjust = 0.5, hjust = 0,
+                                     color = "black"),
+          axis.title.x = element_blank(),
+          axis.title.y = element_blank(),
+          axis.ticks = element_blank(),
+          axis.ticks.y = element_blank(),
+          axis.ticks.x = element_blank(),
+          legend.position = c(2.14, 1.15),
+          legend.justification = "top",
+          legend.text = element_text(size = 6, family = "Helvetica"),
+          legend.title = element_text(size = 6, family = "Helvetica"),
+          legend.key.size = unit(0.35, 'cm'),
+          text = element_text(family = "Helvetica"),
+          panel.grid.major = element_blank(),
+          panel.grid.minor = element_blank(),
+          panel.background = element_rect(fill = "white",
+                                          colour = "white",
+                                          size = 1, linetype = "solid")) + 
+    theme(plot.margin = unit(c(0.4, 2, 0.3, -.450), "cm")) + 
+    geom_segment(data = my.lines, aes(x = x1, y = y1, xend = x2, yend = y2), 
+                 size = .2, inherit.aes = F) +
+    # Annotate rows with regular text first
+    geom_text(data = unique(dat_long[, c("feature")]),
+              aes(x = Inf, y = feature, label = feature),
+              hjust = 0, size = 2.5, family = "Helvetica", fontface = 
+                "plain") 
+
+
+
+## Override clipping (this part is unchanged)
+gg2 <- ggplot_gtable(ggplot_build(heatmap.plot))
+gg2$layout$clip[gg2$layout$name == "panel"] <- "off"
+grid.draw(gg2)
+
+
+## Combine dendrogram and heatmap
+
+layout.mat <- rbind(c(NA, 2, NA),
+                    c(1, 2, NA),
+                    c(1, NA, NA)
+)
+
+#plot_all <- grid.arrange(p, gg2, ncol = 3, layout_matrix = layout.mat, 
+#                         widths = c(0.15, 0.45, 0.6), heights = c(1.0, 52, 2.2))
+
+labels_protos <- labels
+```
+
+
+```{r echo = F, warning = F}
+df <- as.data.frame(t(coef_mat3))
+col_names <- colnames(coef_mat3)
+df$label <- col_names
+df$channel <- substr(df$label, nchar(df$label)-2, nchar(df$label))
+```
+
+### Scaterplot representation
+
+```{r echo = F}
+# Step 1: Filter df for labels that start with names in labels_protos
+labels_start_with_protos <- df[grep(paste0("^", paste(labels_protos, collapse="|")), df$label), ]
+
+# Step 2: From this subset, further filter for rows where the absolute value of 'Int' is greater than 2
+label_protos_filtered <- labels_start_with_protos[abs(labels_start_with_protos$Int) > 2, ]
+df_plt <- df
+df_plt[, 3][abs(df_plt[, 3])>3] <- 3
+plot_int <- ggplot(df_plt, aes(x = `comp. 1`, y = `comp. 2`, color = Int)) +
+  theme_minimal() +
+  theme(axis.title = element_text(size = 15),
+        legend.title = element_text(size = 15)) +
+  geom_vline(xintercept = 0, color = "grey") +
+  geom_hline(yintercept = 0, color = "grey") +
+  geom_point(size = 2.8) +
+  scale_color_gradient2(low = muted("blue"), mid = "white", high = muted("red"), midpoint = 0) +
+  xlab(bquote(hat(beta)["j"])) +
+  ylab(bquote(hat(beta)["k"])) +
+  labs(color = bquote(hat(theta)["j,k"])) +
+  geom_text_repel(data = label_protos_filtered,
+            aes(x = `comp. 1`, y = `comp. 2`, label = label),
+            size = 2.5, color = "black", max.overlaps = 0, min.segment.length=0)
+
+plot_int
+```
+
+We can't label all features here, but we get a rough idea what kind of effects
+are most prevalent. We see, for instance, many antagonistic effects, where two compounds
+do have individual positive effects on a feature, but in combination this effect is not that strong anymore (upper right quadrant, blue points). We also see this behavior into the other direction, where tow individual effects are negative, but the additional combinatorial effect is positive (lower left quadrant, red points).
+We also see multiple competitive (or even cancelling out) effects between the compounds, where the two compounds show an opposite behavior and the additional combinatorial effect promotes on of the two behaviors.
+
+
+
+
+
+## What does this figure look like if we stratify it?
+
+
+
+
+## Channel 1: Nucleus
+
+```{r echo = F, warning=F}
+scatterplt_all(channel = "Ch1", C = coef_matrix_weak_10uM,
+                           textsize = 0, max.overlaps = 0)
+```
+
+
+The behavior in the Nucleus is very similar to the overall behavior. 
+
+
+## Channel 2: Endoplasmic reticulum
+
+```{r  warning=F}
+scatterplt_all(channel = "Ch2", C = coef_matrix_weak_10uM,
+                           textsize = 0, max.overlaps = 0)
+```
+
+## Channel 3: Nucleoli, cytoplasmic RNA
+
+```{r  warning=F}
+scatterplt_all(channel = "Ch3", C = coef_matrix_weak_10uM,
+                           textsize = 0, max.overlaps = 0)
+```
+
+
+## Channel 4: Golgi, plasma membrane, F-actin, cytoskeleton
+
+```{r warning=F}
+scatterplt_all(channel = "Ch4", C = coef_matrix_weak_10uM,
+                           textsize = 0, max.overlaps = 0)
+```
+
+
+## Channel 5: Mitochondria
+
+```{r warning=F}
+scatterplt_all(channel = "Ch5", C = coef_matrix_weak_10uM,
+                           textsize = 0, max.overlaps = 0)
+```
+
+# Specific compound combinations
+
+Instead of looking into different channels, we can also look into this representation by taking into account specific pairs of compounds.
+
+There are different categories of behavior:
+
+1. Antagonists: In this category two compounds show similar individual effects, but in combination their effect is lowered (less strong then expected under independence of the two individual effects or even cancelled out).
+
+In this summary I'm only focusing on combinations that affect many features.
+
+Here's an example:
+
+```{r fig.height=10, fig.width=10}
+plot_interactions(x = "AMG900",  y = "Rotenone", 
+                  coeff.matrix = t(coef_matrix_weak_10uM),
+                  text.size = 3, max.overlaps = 10)
+
+```
+
+
+```{r  fig.height=10, fig.width=10}
+plot_interactions(x = "Calcitriol",  y = "FCCP", 
+                  coeff.matrix = t(coef_matrix_weak_10uM),
+                  text.size = 3, max.overlaps = 5)
+```
+
+
+
+## Files written
+
+These files have been written to the target directory, ```r paste0("data/", params$name)```:
+
+```{r list-files-target}
+projthis::proj_dir_info(path_target())
+```
