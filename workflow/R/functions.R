@@ -261,7 +261,9 @@ plot_interactions <- function(x = "DNA Meth. m5C", y = "H3K9 me3",
   hw_plot <- hw_plot +  
     xlab(bquote(hat(beta)[.(colnames(df)[1])])) + 
     ylab(bquote(hat(beta)[.(colnames(df)[2])]))  + 
-    labs(color=bquote(hat(theta)["interaction"]))  
+    labs(color=bquote(hat(theta)["interaction"]))  +
+    xlim(-2.5, 5) +
+    ylim(-2.7, 5)
    
   
   return(hw_plot)
@@ -364,5 +366,7 @@ scatterplt_all <- function(channel = "Ch1", C = coef_matrix_weak_10uM_21features
   plot_int + 
     xlab(bquote(hat(beta)["comp. 1"])) + 
     ylab(bquote(hat(beta)["comp. 2"]))  + 
-    labs(colour=bquote(hat(theta)["Interaction"])) 
+    labs(colour=bquote(hat(theta)["Interaction"])) +
+    xlim(-2.5, 5) +
+    ylim(-2.7, 5)
 }

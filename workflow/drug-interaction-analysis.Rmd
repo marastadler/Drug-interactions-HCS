@@ -8,7 +8,7 @@ params:
 
 ```{r here, message=FALSE, echo = F}
 here::i_am(paste0(params$name, ".Rmd"), uuid = "8d0bb6d6-5ca0-48b3-af93-03b3ce359b3a")
-knitr::opts_chunk$set(dpi = 400, echo = T, warning = F, message = F)
+knitr::opts_chunk$set(dpi = 250, echo = T, warning = F, message = F)
 ```
 
 
@@ -592,7 +592,7 @@ df$channel <- substr(df$label, nchar(df$label)-2, nchar(df$label))
 
 ### Scaterplot representation
 
-```{r echo = F}
+```{r echo = F, fig.height=7, fig.width=7}
 # Step 1: Filter df for labels that start with names in labels_protos
 labels_start_with_protos <- df[grep(paste0("^", paste(labels_protos, collapse="|")), df$label), ]
 
@@ -634,7 +634,7 @@ We also see multiple competitive (or even cancelling out) effects between the co
 
 ## Channel 1: Nucleus
 
-```{r echo = F, warning=F}
+```{r echo = F, warning=F, fig.height=7, fig.width=7}
 scatterplt_all(channel = "Ch1", C = coef_matrix_weak_10uM,
                            textsize = 0, max.overlaps = 0)
 ```
@@ -645,14 +645,14 @@ The behavior in the Nucleus is very similar to the overall behavior.
 
 ## Channel 2: Endoplasmic reticulum
 
-```{r  warning=F}
+```{r  warning=F, fig.height=7, fig.width=7}
 scatterplt_all(channel = "Ch2", C = coef_matrix_weak_10uM,
                            textsize = 0, max.overlaps = 0)
 ```
 
 ## Channel 3: Nucleoli, cytoplasmic RNA
 
-```{r  warning=F}
+```{r  warning=F, fig.height=7, fig.width=7}
 scatterplt_all(channel = "Ch3", C = coef_matrix_weak_10uM,
                            textsize = 0, max.overlaps = 0)
 ```
@@ -660,7 +660,7 @@ scatterplt_all(channel = "Ch3", C = coef_matrix_weak_10uM,
 
 ## Channel 4: Golgi, plasma membrane, F-actin, cytoskeleton
 
-```{r warning=F}
+```{r warning=F, fig.height=7, fig.width=7}
 scatterplt_all(channel = "Ch4", C = coef_matrix_weak_10uM,
                            textsize = 0, max.overlaps = 0)
 ```
@@ -668,7 +668,7 @@ scatterplt_all(channel = "Ch4", C = coef_matrix_weak_10uM,
 
 ## Channel 5: Mitochondria
 
-```{r warning=F}
+```{r warning=F, fig.height=7, fig.width=7}
 scatterplt_all(channel = "Ch5", C = coef_matrix_weak_10uM,
                            textsize = 0, max.overlaps = 0)
 ```
@@ -685,7 +685,7 @@ In this summary I'm only focusing on combinations that affect many features.
 
 Here's an example:
 
-```{r fig.height=10, fig.width=10}
+```{r fig.height=7, fig.width=7}
 plot_interactions(x = "AMG900",  y = "Rotenone", 
                   coeff.matrix = t(coef_matrix_weak_10uM),
                   text.size = 3, max.overlaps = 10)
@@ -693,7 +693,7 @@ plot_interactions(x = "AMG900",  y = "Rotenone",
 ```
 
 
-```{r  fig.height=10, fig.width=10}
+```{r  fig.height=7, fig.width=7}
 plot_interactions(x = "Calcitriol",  y = "FCCP", 
                   coeff.matrix = t(coef_matrix_weak_10uM),
                   text.size = 3, max.overlaps = 5)
